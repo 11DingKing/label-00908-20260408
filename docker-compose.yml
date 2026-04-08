@@ -15,7 +15,16 @@ services:
     networks:
       - billing_network
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot123456"]
+      test:
+        [
+          "CMD",
+          "mysqladmin",
+          "ping",
+          "-h",
+          "localhost",
+          "-uroot",
+          "-proot123456",
+        ]
       interval: 5s
       timeout: 5s
       retries: 10
@@ -87,6 +96,18 @@ services:
         echo 'Application initialized successfully!' &&
         supervisord -c /etc/supervisor/conf.d/supervisord.conf
       "
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: billing_frontend
+    ports:
+      - "3000:80"
+    depends_on:
+      - backend
+    networks:
+      - billing_network
 
 networks:
   billing_network:
