@@ -1,7 +1,6 @@
 services:
   mysql:
     image: mysql:8.0
-    platform: linux/amd64
     container_name: billing_mysql
     environment:
       MYSQL_ROOT_PASSWORD: root123456
@@ -31,8 +30,7 @@ services:
       start_period: 30s
 
   redis:
-    image: redis:7-alpine
-    platform: linux/amd64
+    image: redis:7.2-alpine
     container_name: billing_redis
     ports:
       - "6379:6379"
