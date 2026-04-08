@@ -1,0 +1,98 @@
+services:
+  mysql:
+    image: mysql:8.0
+    platform: linux/amd64
+    container_name: billing_mysql
+    environment:
+      MYSQL_ROOT_PASSWORD: root123456
+      MYSQL_DATABASE: billing_system
+      MYSQL_USER: billing
+      MYSQL_PASSWORD: billing123
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+    networks:
+      - billing_network
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-uroot", "-proot123456"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 30s
+
+  redis:
+    image: redis:7-alpine
+    platform: linux/amd64
+    container_name: billing_redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+    networks:
+      - billing_network
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build:
+      context: ./backend
+      dockerfile: Dockerfile
+    container_name: billing_backend
+    ports:
+      - "8000:80"
+    depends_on:
+      mysql:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    environment:
+      APP_ENV: local
+      APP_DEBUG: true
+      DB_CONNECTION: mysql
+      DB_HOST: mysql
+      DB_PORT: 3306
+      DB_DATABASE: billing_system
+      DB_USERNAME: root
+      DB_PASSWORD: root123456
+      REDIS_HOST: redis
+      REDIS_PORT: 6379
+      REDIS_CLIENT: predis
+      JWT_SECRET: ${JWT_SECRET:-your-secret-key-change-in-production}
+      QUEUE_CONNECTION: sync
+      CACHE_STORE: array
+    volumes:
+      - ./backend:/var/www/html
+      - backend_storage:/var/www/html/storage
+    networks:
+      - billing_network
+    command: >
+      sh -c "
+        echo 'Waiting for MySQL to be ready...' &&
+        sleep 5 &&
+        until php -r \"new PDO('mysql:host=mysql;dbname=billing_system', 'root', 'root123456');\" 2>/dev/null; do
+          echo 'MySQL is not ready yet, waiting...'
+          sleep 3
+        done &&
+        echo 'MySQL is ready!' &&
+        php artisan key:generate --force &&
+        php artisan jwt:secret --force &&
+        php artisan migrate --force &&
+        php artisan db:seed --force &&
+        php artisan config:cache &&
+        php artisan route:cache &&
+        echo 'Application initialized successfully!' &&
+        supervisord -c /etc/supervisor/conf.d/supervisord.conf
+      "
+
+networks:
+  billing_network:
+    driver: bridge
+
+volumes:
+  mysql_data:
+  redis_data:
+  backend_storage:

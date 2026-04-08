@@ -1,0 +1,940 @@
+openapi: 3.0.3
+info:
+  title: 复杂计费系统 API
+  description: |
+    提供订阅管理、计费引擎、支付集成、使用量计量、财务报表等完整功能的 RESTful API。
+    
+    ## 认证方式
+    使用 JWT Bearer Token 认证。通过 `/api/auth/login` 获取 token，
+    在请求头中添加 `Authorization: Bearer <token>`。
+    
+    ## 错误码
+    - 400: 请求参数错误
+    - 401: 未认证
+    - 403: 无权限（Policy 授权失败）
+    - 404: 资源不存在
+    - 422: 验证失败
+    - 500: 服务器内部错误
+  version: 1.0.0
+  contact:
+    name: API Support
+
+servers:
+  - url: http://localhost:8000/api
+    description: 本地开发环境
+
+tags:
+  - name: 认证
+    description: 用户注册、登录、Token 管理
+  - name: 订阅管理
+    description: 订阅计划查询、创建、升级、降级、取消
+  - name: 使用量计量
+    description: 使用量记录、维度管理、统计查询
+  - name: 计费引擎
+    description: 账单计算、计费规则、按比例计算
+  - name: 账单管理
+    description: 账单查询、明细、PDF 下载
+  - name: 支付
+    description: 支付创建、回调、退款、状态同步
+  - name: 财务报表
+    description: 财务概览、收入趋势、使用量报表、导出
+  - name: 管理后台
+    description: 用户管理、计划管理、优惠券、税率、RBAC
+  - name: Webhook
+    description: 支付网关回调（Stripe/Alipay/WeChat）
+  - name: 健康检查
+    description: 系统健康状态
+
+components:
+  securitySchemes:
+    bearerAuth:
+      type: http
+      scheme: bearer
+      bearerFormat: JWT
+
+  schemas:
+    User:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        email: { type: string, format: email }
+        phone: { type: string, nullable: true }
+        role: { type: string, enum: [user, admin] }
+        status: { type: string, enum: [active, inactive, suspended] }
+        created_at: { type: string, format: date-time }
+
+    SubscriptionPlan:
+      type: object
+      properties:
+        id: { type: integer }
+        name: { type: string }
+        code: { type: string }
+        price: { type: number, format: float }
+        billing_cycle: { type: string, enum: [monthly, quarterly, yearly] }
+        features: { type: object }
+        is_active: { type: boolean }
+
+    Subscription:
+      type: object
+      properties:
+        id: { type: integer }
+        user_id: { type: integer }
+        plan_id: { type: integer }
+        status: { type: string, enum: [active, cancelled, expired, pending] }
+        start_date: { type: string, format: date-time }
+        end_date: { type: string, format: date-time }
+        auto_renew: { type: boolean }
+
+    Bill:
+      type: object
+      properties:
+        id: { type: integer }
+        user_id: { type: integer }
+        subscription_id: { type: integer }
+        bill_number: { type: string }
+        subscription_fee: { type: number }
+        usage_fee: { type: number }
+        discount: { type: number }
+        coupon_code: { type: string, nullable: true }
+        tax: { type: number }
+        tax_rate: { type: number }
+        total_amount: { type: number }
+        currency: { type: string }
+        status: { type: string, enum: [pending, paid, overdue, cancelled] }
+        period_start: { type: string, format: date }
+        period_end: { type: string, format: date }
+        due_date: { type: string, format: date }
+
+    Payment:
+      type: object
+      properties:
+        id: { type: integer }
+        user_id: { type: integer }
+        bill_id: { type: integer }
+        payment_method: { type: string, enum: [alipay, wechat, bank_transfer, credit_card] }
+        amount: { type: number }
+        currency: { type: string }
+        gateway: { type: string }
+        status: { type: string, enum: [pending, processing, completed, failed, refunded] }
+        transaction_id: { type: string, nullable: true }
+
+    Refund:
+      type: object
+      properties:
+        id: { type: integer }
+        payment_id: { type: integer }
+        refund_number: { type: string }
+        amount: { type: number }
+        type: { type: string, enum: [full, partial] }
+        status: { type: string, enum: [pending, processing, completed, failed] }
+        reason: { type: string }
+
+    Error:
+      type: object
+      properties:
+        message: { type: string }
+        errors: { type: object }
+
+security:
+  - bearerAuth: []
+
+paths:
+  # === 健康检查 ===
+  /health:
+    get:
+      tags: [健康检查]
+      summary: 系统健康检查
+      security: []
+      responses:
+        '200':
+          description: 系统正常
+
+  /health/database:
+    get:
+      tags: [健康检查]
+      summary: 数据库健康检查
+      security: []
+      responses:
+        '200':
+          description: 数据库连接正常
+
+  # === 认证 ===
+  /auth/register:
+    post:
+      tags: [认证]
+      summary: 用户注册
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, email, password, password_confirmation]
+              properties:
+                name: { type: string, maxLength: 255 }
+                email: { type: string, format: email }
+                password: { type: string, minLength: 8 }
+                password_confirmation: { type: string }
+                phone: { type: string, maxLength: 20 }
+      responses:
+        '201':
+          description: 注册成功，返回 JWT token
+        '422':
+          description: 验证失败
+
+  /auth/login:
+    post:
+      tags: [认证]
+      summary: 用户登录
+      security: []
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [email, password]
+              properties:
+                email: { type: string, format: email }
+                password: { type: string }
+      responses:
+        '200':
+          description: 登录成功，返回 JWT token
+        '401':
+          description: 邮箱或密码错误
+
+  /auth/me:
+    get:
+      tags: [认证]
+      summary: 获取当前用户信息
+      responses:
+        '200':
+          description: 用户信息
+
+  /auth/logout:
+    post:
+      tags: [认证]
+      summary: 登出
+      responses:
+        '200':
+          description: 登出成功
+
+  /auth/refresh:
+    post:
+      tags: [认证]
+      summary: 刷新 Token
+      responses:
+        '200':
+          description: 新 Token
+
+  /auth/profile:
+    put:
+      tags: [认证]
+      summary: 更新个人资料
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                name: { type: string }
+                phone: { type: string }
+      responses:
+        '200':
+          description: 更新成功
+
+  /auth/password:
+    put:
+      tags: [认证]
+      summary: 修改密码
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [current_password, password, password_confirmation]
+              properties:
+                current_password: { type: string }
+                password: { type: string, minLength: 8 }
+                password_confirmation: { type: string }
+      responses:
+        '200':
+          description: 密码修改成功
+
+  # === 订阅管理 ===
+  /subscriptions/plans:
+    get:
+      tags: [订阅管理]
+      summary: 获取所有订阅计划
+      responses:
+        '200':
+          description: 计划列表
+
+  /subscriptions/plans/{id}:
+    get:
+      tags: [订阅管理]
+      summary: 获取单个订阅计划详情
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 计划详情
+
+  /subscriptions:
+    get:
+      tags: [订阅管理]
+      summary: 获取用户订阅列表
+      responses:
+        '200':
+          description: 订阅列表
+    post:
+      tags: [订阅管理]
+      summary: 创建新订阅
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id]
+              properties:
+                plan_id: { type: integer }
+      responses:
+        '201':
+          description: 订阅创建成功
+
+  /subscriptions/{id}:
+    get:
+      tags: [订阅管理]
+      summary: 获取订阅详情（Policy 授权）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 订阅详情
+        '403':
+          description: 无权查看
+
+  /subscriptions/{id}/upgrade:
+    put:
+      tags: [订阅管理]
+      summary: 升级订阅（Policy 授权）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id]
+              properties:
+                plan_id: { type: integer }
+      responses:
+        '200':
+          description: 升级成功
+        '422':
+          description: 新计划价格必须高于当前计划
+
+  /subscriptions/{id}/downgrade:
+    put:
+      tags: [订阅管理]
+      summary: 降级订阅（Policy 授权）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [plan_id]
+              properties:
+                plan_id: { type: integer }
+      responses:
+        '200':
+          description: 降级成功
+
+  /subscriptions/{id}/cancel:
+    post:
+      tags: [订阅管理]
+      summary: 取消订阅（Policy 授权）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                reason: { type: string }
+      responses:
+        '200':
+          description: 取消成功
+
+  # === 使用量计量 ===
+  /usage/record:
+    post:
+      tags: [使用量计量]
+      summary: 记录使用量
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [dimension_code, quantity]
+              properties:
+                dimension_code: { type: string }
+                quantity: { type: number }
+                metadata: { type: object }
+      responses:
+        '201':
+          description: 记录成功
+
+  /usage/dimensions:
+    get:
+      tags: [使用量计量]
+      summary: 获取计量维度列表
+      responses:
+        '200':
+          description: 维度列表
+
+  /usage/records:
+    get:
+      tags: [使用量计量]
+      summary: 获取使用量记录
+      parameters:
+        - name: start_date
+          in: query
+          schema: { type: string, format: date }
+        - name: end_date
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: 使用量记录
+
+  /usage/statistics:
+    get:
+      tags: [使用量计量]
+      summary: 获取使用量统计
+      responses:
+        '200':
+          description: 统计数据
+
+  # === 计费引擎 ===
+  /billing/calculate:
+    post:
+      tags: [计费引擎]
+      summary: 计算账单
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subscription_id]
+              properties:
+                subscription_id: { type: integer }
+                coupon_code: { type: string }
+                currency: { type: string }
+      responses:
+        '200':
+          description: 计算结果
+
+  /billing/rules:
+    get:
+      tags: [计费引擎]
+      summary: 获取计费规则
+      responses:
+        '200':
+          description: 计费规则配置
+
+  /billing/proration:
+    post:
+      tags: [计费引擎]
+      summary: 计算按比例费用（升级/降级）
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [subscription_id, new_plan_id]
+              properties:
+                subscription_id: { type: integer }
+                new_plan_id: { type: integer }
+      responses:
+        '200':
+          description: 按比例计算结果
+
+  # === 账单管理 ===
+  /bills:
+    get:
+      tags: [账单管理]
+      summary: 获取账单列表（管理员可查看所有）
+      parameters:
+        - name: per_page
+          in: query
+          schema: { type: integer, default: 15 }
+      responses:
+        '200':
+          description: 账单列表
+
+  /bills/{id}:
+    get:
+      tags: [账单管理]
+      summary: 获取账单详情（Policy 授权）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 账单详情
+        '403':
+          description: 无权查看
+
+  /bills/{id}/items:
+    get:
+      tags: [账单管理]
+      summary: 获取账单明细（Policy 授权）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 账单明细
+
+  /bills/{id}/download:
+    post:
+      tags: [账单管理]
+      summary: 下载账单 PDF（Policy 授权）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: PDF 文件
+          content:
+            application/pdf:
+              schema:
+                type: string
+                format: binary
+        '403':
+          description: 无权下载
+
+  # === 支付 ===
+  /payments:
+    get:
+      tags: [支付]
+      summary: 获取支付记录列表（管理员可查看所有）
+      responses:
+        '200':
+          description: 支付记录列表
+    post:
+      tags: [支付]
+      summary: 创建支付订单
+      parameters:
+        - name: Idempotency-Key
+          in: header
+          schema: { type: string }
+          description: 幂等性键，防止重复支付
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [bill_id, payment_method]
+              properties:
+                bill_id: { type: integer }
+                payment_method: { type: string, enum: [alipay, wechat, bank_transfer, credit_card] }
+                payment_data: { type: object }
+                return_url: { type: string }
+      responses:
+        '201':
+          description: 支付订单已创建，返回网关数据
+
+  /payments/{id}:
+    get:
+      tags: [支付]
+      summary: 获取支付详情（Policy 授权）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 支付详情
+        '403':
+          description: 无权查看
+
+  /payments/{id}/callback:
+    post:
+      tags: [支付]
+      summary: 支付回调（兼容旧接口）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                transaction_id: { type: string }
+                success: { type: boolean }
+      responses:
+        '200':
+          description: 回调处理成功
+
+  /payments/{id}/refund:
+    post:
+      tags: [支付]
+      summary: 发起退款（Policy 授权）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [amount, reason]
+              properties:
+                amount: { type: number, minimum: 0.01 }
+                reason: { type: string, maxLength: 500 }
+      responses:
+        '201':
+          description: 退款申请已提交
+
+  /payments/{id}/sync:
+    get:
+      tags: [支付]
+      summary: 同步支付状态（从网关查询）
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 最新支付状态
+
+  # === 财务报表 ===
+  /reports/overview:
+    get:
+      tags: [财务报表]
+      summary: 财务概览
+      parameters:
+        - name: start_date
+          in: query
+          schema: { type: string, format: date }
+        - name: end_date
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: 概览数据（收入、税费、折扣、退款等）
+
+  /reports/usage:
+    get:
+      tags: [财务报表]
+      summary: 使用量报表
+      responses:
+        '200':
+          description: 使用量统计
+
+  /reports/revenue:
+    get:
+      tags: [财务报表]
+      summary: 收入报表
+      responses:
+        '200':
+          description: 收入数据
+
+  /reports/trend:
+    get:
+      tags: [财务报表]
+      summary: 收入趋势（按月）
+      parameters:
+        - name: months
+          in: query
+          schema: { type: integer, default: 12 }
+      responses:
+        '200':
+          description: 月度趋势数据
+
+  /reports/subscription-stats:
+    get:
+      tags: [财务报表]
+      summary: 订阅统计
+      responses:
+        '200':
+          description: 订阅状态分布
+
+  /reports/export:
+    get:
+      tags: [财务报表]
+      summary: 导出报表（CSV）
+      parameters:
+        - name: type
+          in: query
+          required: true
+          schema: { type: string, enum: [bills, payments, usage] }
+        - name: start_date
+          in: query
+          schema: { type: string, format: date }
+        - name: end_date
+          in: query
+          schema: { type: string, format: date }
+      responses:
+        '200':
+          description: CSV 文件
+          content:
+            text/csv:
+              schema:
+                type: string
+
+  # === Webhook ===
+  /webhooks/stripe:
+    post:
+      tags: [Webhook]
+      summary: Stripe 支付回调
+      security: []
+      responses:
+        '200':
+          description: 处理成功
+
+  /webhooks/alipay:
+    post:
+      tags: [Webhook]
+      summary: 支付宝回调
+      security: []
+      responses:
+        '200':
+          description: 处理成功
+
+  /webhooks/wechat:
+    post:
+      tags: [Webhook]
+      summary: 微信支付回调
+      security: []
+      responses:
+        '200':
+          description: 处理成功
+
+  # === 管理后台 ===
+  /admin/users:
+    get:
+      tags: [管理后台]
+      summary: 获取用户列表
+      responses:
+        '200':
+          description: 用户列表
+
+  /admin/subscriptions:
+    get:
+      tags: [管理后台]
+      summary: 获取所有订阅
+      responses:
+        '200':
+          description: 订阅列表
+
+  /admin/bills:
+    get:
+      tags: [管理后台]
+      summary: 获取所有账单
+      responses:
+        '200':
+          description: 账单列表
+
+  /admin/plans:
+    get:
+      tags: [管理后台]
+      summary: 获取订阅计划列表
+      responses:
+        '200':
+          description: 计划列表
+    post:
+      tags: [管理后台]
+      summary: 创建订阅计划
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [name, code, price, billing_cycle]
+              properties:
+                name: { type: string }
+                code: { type: string }
+                price: { type: number }
+                billing_cycle: { type: string }
+                features: { type: object }
+      responses:
+        '201':
+          description: 创建成功
+
+  /admin/plans/{id}:
+    put:
+      tags: [管理后台]
+      summary: 更新订阅计划
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 更新成功
+
+  /admin/coupons:
+    get:
+      tags: [管理后台]
+      summary: 获取优惠券列表
+      responses:
+        '200':
+          description: 优惠券列表
+    post:
+      tags: [管理后台]
+      summary: 创建优惠券
+      responses:
+        '201':
+          description: 创建成功
+
+  /admin/coupons/{id}:
+    put:
+      tags: [管理后台]
+      summary: 更新优惠券
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 更新成功
+
+  /admin/tax-rates:
+    get:
+      tags: [管理后台]
+      summary: 获取税率列表
+      responses:
+        '200':
+          description: 税率列表
+    post:
+      tags: [管理后台]
+      summary: 创建税率
+      responses:
+        '201':
+          description: 创建成功
+
+  /admin/tax-rates/{id}:
+    put:
+      tags: [管理后台]
+      summary: 更新税率
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 更新成功
+
+  /admin/refunds:
+    get:
+      tags: [管理后台]
+      summary: 获取退款列表
+      responses:
+        '200':
+          description: 退款列表
+
+  /admin/refunds/{id}/process:
+    post:
+      tags: [管理后台]
+      summary: 处理退款
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      responses:
+        '200':
+          description: 退款处理成功
+
+  /admin/metering-dimensions:
+    get:
+      tags: [管理后台]
+      summary: 获取计量维度列表
+      responses:
+        '200':
+          description: 维度列表
+    post:
+      tags: [管理后台]
+      summary: 创建计量维度
+      responses:
+        '201':
+          description: 创建成功
+
+  /admin/roles:
+    get:
+      tags: [管理后台]
+      summary: 获取角色列表（含权限）
+      responses:
+        '200':
+          description: 角色列表
+
+  /admin/users/{id}/roles:
+    post:
+      tags: [管理后台]
+      summary: 分配用户角色
+      parameters:
+        - name: id
+          in: path
+          required: true
+          schema: { type: integer }
+      requestBody:
+        required: true
+        content:
+          application/json:
+            schema:
+              type: object
+              required: [roles]
+              properties:
+                roles: { type: array, items: { type: integer } }
+      responses:
+        '200':
+          description: 角色分配成功
